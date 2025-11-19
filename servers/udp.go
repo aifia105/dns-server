@@ -1,35 +1,55 @@
 package servers
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"sync"
+	"time"
 )
 
-func UdpServer() {
-	fmt.Println("Starting server on UDP port 53...")
+func UdpServer(ctx context.Context, wg *sync.WaitGroup) error {
+	defer wg.Done()
 
-	addr, err := net.ResolveUDPAddr("udp", ":53")
+	addr, err := net.ResolveUDPAddr("udp", ":8080")
 	if err != nil {
 		fmt.Println("Error resolving address:", err)
-		return
+		return err
 	}
 
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		fmt.Println("Error starting server:", err)
-		return
+		return err
 	}
 	defer conn.Close()
 
-	fmt.Println("UDP server is listening on port 53")
+	fmt.Println("UDP server is listening on port 8080")
+
+	go func() {
+		<-ctx.Done()
+		fmt.Printf("UDP server: received shutdown signal, closing listener\n")
+		conn.Close()
+	}()
 
 	buffer := make([]byte, 4096)
 
 	for {
+		conn.SetReadDeadline(time.Now().Add(1 * time.Second))
+
 		n, client, err := conn.ReadFrom(buffer)
 		if err != nil {
-			fmt.Println("Error reading from connection:", err)
-			continue
+			select {
+			case <-ctx.Done():
+				fmt.Println("UDP server: shutting down")
+				return nil
+			default:
+				if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+					continue
+				}
+				fmt.Println("Error reading from connection:", err)
+				continue
+			}
 		}
 
 		addr := client.String()

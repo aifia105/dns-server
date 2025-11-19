@@ -1,28 +1,50 @@
 package servers
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 )
 
-func TcpServer() {
-	fmt.Println("Starting server on TCP port 53...")
-	ln, err := net.Listen("tcp", ":53")
+func TcpServer(ctx context.Context, wg *sync.WaitGroup) error {
+	defer wg.Done()
+
+	ln, err := net.Listen("tcp", ":8081")
 	if err != nil {
 		fmt.Println("Error starting server:", err)
-		return
+		return err
 	}
 	defer ln.Close()
 
-	fmt.Println("TCP server is listening on port 53")
+	fmt.Println("TCP server is listening on port 8081")
+
+	go func() {
+		<-ctx.Done()
+		fmt.Printf("TCP server: received shutdown signal, closing listener\n")
+		ln.Close()
+	}()
 
 	for {
+		if tcpListener, ok := ln.(*net.TCPListener); ok {
+			tcpListener.SetDeadline(time.Now().Add(1 * time.Second))
+		}
+
 		conn, err := ln.Accept()
 		if err != nil {
-			fmt.Println("Error accepting connection:", err)
-			continue
+			select {
+			case <-ctx.Done():
+				fmt.Printf("TCP server: shutting down\n")
+				return nil
+			default:
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				fmt.Println("Error accepting connection:", err)
+				continue
+			}
 		}
 		go handleConnection(conn)
 	}
