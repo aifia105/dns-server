@@ -3,35 +3,21 @@ package resolver
 import (
 	"fmt"
 	"strings"
+
+	"aifia.com/dns-server/types"
 )
 
-const (
-	TypeA     = 1   // IPv4 address
-	TypeNS    = 2   // Name server
-	TypeCNAME = 5   // Canonical name
-	TypeSOA   = 6   // Start of authority
-	TypeMX    = 15  // Mail exchange
-	TypeTXT   = 16  // Text record
-	TypeAAAA  = 28  // IPv6 address
-	TypeOPT   = 41  // EDNS0 option
-	TypeANY   = 255 // All records
-)
+type MyDNSQuestion struct {
+	types.DNSQuestion
+}
 
-const (
-	ClassIN  = 1   // Internet
-	ClassCS  = 2   // CSNET
-	ClassCH  = 3   // CHAOS
-	ClassHS  = 4   // Hesiod
-	ClassANY = 255 // Any class
-)
-
-func Parser(data []byte) (*DNSMessage, error) {
+func Parser(data []byte) (*types.DNSMessage, error) {
 
 	if len(data) < 12 {
 		return nil, fmt.Errorf("message too short: %d bytes", len(data))
 	}
 
-	header := DNSHeader{
+	header := types.DNSHeader{
 		ID:      uint16(data[0])<<8 | uint16(data[1]),
 		Flags:   uint16(data[2])<<8 | uint16(data[3]),
 		QDCount: uint16(data[4])<<8 | uint16(data[5]),
@@ -39,44 +25,70 @@ func Parser(data []byte) (*DNSMessage, error) {
 		NSCount: uint16(data[8])<<8 | uint16(data[9]),
 		ARCount: uint16(data[10])<<8 | uint16(data[11]),
 	}
+	offset := 12
 
-	questions, err := parseQuestion(data, int(header.QDCount))
+	// Parse Questions
+	questions, newOffset, err := parseQuestion(data, offset, int(header.QDCount))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse questions: %w", err)
 	}
+	offset = newOffset
 
-	dnsMessage := &DNSMessage{
-		Header:    header,
-		Questions: questions,
+	// Parse Answers
+	answers, newOffset, err := parseResourceRecords(data, offset, int(header.ANCount))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse answers: %w", err)
+	}
+	offset = newOffset
+
+	// Parse Authorities
+	authorities, newOffset, err := parseResourceRecords(data, offset, int(header.NSCount))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse authorities: %w", err)
+	}
+	offset = newOffset
+
+	// Parse Additional
+	additional, _, err := parseResourceRecords(data, offset, int(header.ARCount))
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse additional: %w", err)
+	}
+
+	dnsMessage := &types.DNSMessage{
+		Header:      header,
+		Questions:   questions,
+		Answers:     answers,
+		Authorities: authorities,
+		Additional:  additional,
 	}
 	return dnsMessage, nil
 }
 
-func parseQuestion(data []byte, qCount int) ([]DNSQuestion, error) {
-	questions := []DNSQuestion{}
-	offset := 12
+func parseQuestion(data []byte, offset int, qCount int) ([]types.DNSQuestion, int, error) {
+	questions := []types.DNSQuestion{}
+
 	for i := 0; i < qCount; i++ {
 		name, bytesRead, err := parseName(data, offset)
 		if err != nil {
-			return nil, fmt.Errorf("failed to parse question name: %w", err)
+			return nil, offset, fmt.Errorf("failed to parse question name: %w", err)
 		}
 		offset += bytesRead
 
 		if offset+4 > len(data) {
-			return nil, fmt.Errorf("incomplete question section")
+			return nil, offset, fmt.Errorf("incomplete question section")
 		}
 
 		qType := uint16(data[offset])<<8 | uint16(data[offset+1])
 		qClass := uint16(data[offset+2])<<8 | uint16(data[offset+3])
 		offset += 4
 
-		questions = append(questions, DNSQuestion{
+		questions = append(questions, types.DNSQuestion{
 			Name:  name,
 			Type:  qType,
 			Class: qClass,
 		})
 	}
-	return questions, nil
+	return questions, offset, nil
 }
 
 func parseName(data []byte, offset int) (string, int, error) {
@@ -148,7 +160,55 @@ func joinLabels(labels []string) string {
 	return builder.String()
 }
 
-func (q DNSQuestion) String() string {
+func parseResourceRecords(data []byte, offset int, count int) ([]types.DNSResourceRecord, int, error) {
+	records := []types.DNSResourceRecord{}
+
+	for i := 0; i < count; i++ {
+		name, bytesRead, err := parseName(data, offset)
+		if err != nil {
+			return nil, offset, fmt.Errorf("failed to parse RR name: %w", err)
+		}
+		offset += bytesRead
+
+		if offset+10 > len(data) {
+			return nil, offset, fmt.Errorf("incomplete resource record header")
+		}
+
+		rrType := uint16(data[offset])<<8 | uint16(data[offset+1])
+		offset += 2
+
+		rrClass := uint16(data[offset])<<8 | uint16(data[offset+1])
+		offset += 2
+
+		ttl := uint32(data[offset])<<24 | uint32(data[offset+1])<<16 |
+			uint32(data[offset+2])<<8 | uint32(data[offset+3])
+		offset += 4
+
+		rdLength := uint16(data[offset])<<8 | uint16(data[offset+1])
+		offset += 2
+
+		if offset+int(rdLength) > len(data) {
+			return nil, offset, fmt.Errorf("incomplete resource record data")
+		}
+
+		rData := make([]byte, rdLength)
+		copy(rData, data[offset:offset+int(rdLength)])
+		offset += int(rdLength)
+
+		records = append(records, types.DNSResourceRecord{
+			Name:     name,
+			Type:     rrType,
+			Class:    rrClass,
+			TTL:      ttl,
+			RDLength: rdLength,
+			RData:    rData,
+		})
+	}
+
+	return records, offset, nil
+}
+
+func (q MyDNSQuestion) String() string {
 	typeName := getTypeName(q.Type)
 	className := getClassName(q.Class)
 	return fmt.Sprintf("%s (Type:%s Class:%s)", q.Name, typeName, className)
@@ -156,17 +216,17 @@ func (q DNSQuestion) String() string {
 
 func getTypeName(qType uint16) string {
 	switch qType {
-	case TypeA:
+	case types.TypeA:
 		return "A"
-	case TypeNS:
+	case types.TypeNS:
 		return "NS"
-	case TypeCNAME:
+	case types.TypeCNAME:
 		return "CNAME"
-	case TypeMX:
+	case types.TypeMX:
 		return "MX"
-	case TypeTXT:
+	case types.TypeTXT:
 		return "TXT"
-	case TypeAAAA:
+	case types.TypeAAAA:
 		return "AAAA"
 	default:
 		return fmt.Sprintf("%d", qType)
@@ -175,11 +235,11 @@ func getTypeName(qType uint16) string {
 
 func getClassName(qClass uint16) string {
 	switch qClass {
-	case ClassIN:
+	case types.ClassIN:
 		return "IN"
-	case ClassCH:
+	case types.ClassCH:
 		return "CH"
-	case ClassHS:
+	case types.ClassHS:
 		return "HS"
 	default:
 		return fmt.Sprintf("%d", qClass)

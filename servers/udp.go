@@ -59,17 +59,30 @@ func UdpServer(ctx context.Context, wg *sync.WaitGroup) error {
 
 		dnsmessage, err := resolver.Parser(buffer[:n])
 		if err != nil {
-			fmt.Printf("Error parsing DNS message from %s: %v\n", addr, err)
+			fmt.Printf("Query: %s: %v\n", addr, err)
 			continue
 		}
-		fmt.Printf("Parsed DNS message from %s: %+v\n", addr, dnsmessage)
 
-		res := []byte("Hello Bitch")
+		fmt.Printf("Parsed DNS message  from %s: %+v\n", addr, dnsmessage.Questions[0])
+
+		responseMsg, err := resolver.Resolve(dnsmessage)
+		if err != nil {
+			fmt.Printf("Resolve error: %v\n", err)
+			continue
+		}
+
+		res, err := resolver.Serializer(responseMsg)
+		if err != nil {
+			fmt.Printf("Error serializing DNS response for %s: %v\n", addr, err)
+			continue
+		}
 
 		_, err = conn.WriteTo(res, client)
 		if err != nil {
 			fmt.Println("Error writing to connection:", err)
 			continue
 		}
+
+		fmt.Printf("Sent %d bytes response to %s\n", len(res), addr)
 	}
 }

@@ -102,9 +102,20 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
-	fmt.Printf("Parsed DNS message from %s: %+v\n", conn.RemoteAddr(), dnsmessage)
+	fmt.Printf("Query: %s: %+v\n", conn.RemoteAddr(), dnsmessage.Questions[0])
 
-	res := []byte("Hello Bitch")
+	responseMsg, err := resolver.Resolve(dnsmessage)
+	if err != nil {
+		fmt.Printf("Resolve error: %v\n", err)
+		return
+	}
+
+	res, err := resolver.Serializer(responseMsg)
+	if err != nil {
+		fmt.Printf("Error serializing DNS response for %s: %v\n", conn.RemoteAddr(), err)
+		return
+	}
+
 	resLen := uint16(len(res))
 
 	resLenBytes := []byte{byte(resLen >> 8), byte(resLen & 0xff)}

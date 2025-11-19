@@ -15,4 +15,12 @@ echo "2. Testing TCP server (port 8081) with dig:"
 dig @localhost -p 8081 +tcp google.com A
 echo ""
 
+dig @localhost -p 8080 google.com A
+
+
+dig @localhost -p 8080 github.com A
+
+
+dig @localhost -p 8080 thisdomaindoesnotexist12345.com A
+
 echo "=== Tests Complete ==="
